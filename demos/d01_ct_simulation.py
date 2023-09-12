@@ -44,7 +44,7 @@ warnings.filterwarnings("ignore")
 # Create a phantom containing a small cube. In your code, this will be your data
 example_path = '/media/mcgoug01/nvme/Data/kits19_phases/noncontrast/KiTS-00000.nii.gz'
 im_n = nib.load(example_path)
-phantom_og = im_n.get_fdata()[:,:,50]
+phantom_og = np.rot90(im_n.get_fdata()[:,:,60],3)
 phantom = np.expand_dims(phantom_og.copy(),0)
 # CT images can be in different units. The phantom avobe has been defined in Hounsfield Units (HUs)
 # CTtools.ct_utils has a series of functions to transfrom from 3 units: Hounsfield Units (HUs), linear attenuation coefficien (mus) or normalized images
@@ -66,28 +66,18 @@ phantom = phantom_mu
 # Note: we make Z "thick" just because we are going to simulate 2D. for 3D be more careful with this value.
 vg = ts.volume(shape=phantom.shape, size=([np.median(im_n.header['pixdim'][1:4])]*3)*np.array([*phantom.shape]))
 # Define acquisition geometry. We want fan beam, so lets make a "cone" beam and make it 2D. We also need sod and sdd, so we set them up to something medically reasonable.
-pg = ts.cone(
-    angles=360, shape=(1, 900), size=(1, 900), src_orig_dist=575, src_det_dist=1050
-)
+num_detectors = 36000
+angles = 720
+dose_fraction = 0.1
+# pg = ts.cone(
+#     angles=angles, shape=(1, num_detectors), size=(1, num_detectors), src_orig_dist=575, src_det_dist=1050
+# )
+
+pg = ts.parallel(
+    angles=angles, shape=(1, num_detectors), size=(1, num_detectors))
 # A is now an operator.
 A = ts.operator(vg, pg)
 
-#%% Using Geometry class.
-# The above example shows how to define tomosipo operators, but for AItomotools, you should be using the Parameter class, in particular the CT Geometry class.
-import AItomotools.CTtools.ct_geometry as ctgeo
-
-# Create empty Geometry
-geo = ctgeo.Geometry()
-# Fill it with default values
-geo.default_geo()
-geo.voxel_size = np.array([np.median(im_n.header['pixdim'][1:4])]*3)
-geo.image_size = np.array(([np.median(im_n.header['pixdim'][1:4])]*3)*np.array([*phantom.shape]))
-geo.image_shape =  np.array(phantom.shape)
-# Print the geo (these are the values you can ser)
-# print(geo)
-# Dave the geo in JSON
-geo.save("geo.json")
-geo.load("geo.json")
 
 #%% CPU or GPU?
 
@@ -101,8 +91,6 @@ geo.load("geo.json")
 # ct_utils.py contain functions to for realistic CT simulations.
 # In essence, this is the same as using the operator we defined above.
 
-# We can use the following function
-sino = ct.forward_projection_fan(phantom, geo, backend="tomosipo")
 # But given we already defined an operator, we can just do (its the same):
 sino = A(phantom)
 # For noise simulation, a good approximation of CT noise is to add Poisson noise to the non-log transformed sinograms,
@@ -110,7 +98,7 @@ sino = A(phantom)
 # A typical CT scan in a hospital will have I0=10000 photon counts in air. I0=1000 will produce an severely noisy image.
 # You should be cool with not touching the rest of the parameters.
 sino_noisy = ct.sinogram_add_noise(
-    sino, I0=10000, sigma=5, cross_talk=0.05, flat_field=None, dark_field=None
+    sino, I0=10000000*(dose_fraction**2), sigma=2, cross_talk=0.05, flat_field=None, dark_field=None
 )
 background_noise = np.abs(sino-sino_noisy)
 SNR = np.average((sino_noisy-background_noise)/(np.sqrt(background_noise)+1e-6))
@@ -118,9 +106,11 @@ print("Signal-to-Noise Ratio is {:.3f}.".format(SNR))
 
 #%% Create reconstruct the sinograms!
 
-from ts_algorithms import fdk
-recon = from_HU_to_mu(fdk(A,torch.Tensor(sino_noisy)))
+from ts_algorithms import fdk,fbp
+# recon = from_HU_to_mu(fdk(A,torch.Tensor(sino_noisy)))
+recon = from_HU_to_mu(fbp(A,torch.Tensor(sino_noisy)))
 
+fig = plt.figure(figsize=(18,9))
 im = recon[0]
 plt.subplot(121)
 plt.imshow(im,vmin=-200,vmax=200)
